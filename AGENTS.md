@@ -128,6 +128,12 @@ Specs that need the plugin resolved as a real published artifact (rather than `w
 Gate specs on Java version with `@IgnoreIf`/`Assumptions` as the existing ones do — Gradle 9 requires Java 17+, and
 Gradle < 9 does not run on Java 25.
 
+The matrix runs on **two JUnit platforms**. JUnit 6 is Java 17 bytecode and cannot load on Java 8 or Java 11, so the
+test classes are compiled once against the JUnit 5 API and executed against JUnit 5 on `testJava8`/`testJava11` and
+against JUnit 6 (via the `junit6TestRuntimeClasspath` configuration) on `testJava17`/`testJava21`/`testJava25`. Keep
+test code inside the API surface both versions share — nothing enforces it, but CI catches a violation because every
+test class runs on both platforms.
+
 ## Releasing
 
 The version lives in `build.gradle.kts` (`version = "..."`). README examples and the init-script snippet embed the

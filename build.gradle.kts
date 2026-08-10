@@ -18,6 +18,15 @@ val organization = "CycloneDX"
 group = "org.cyclonedx"
 version = "3.4.0"
 
+// JUnit 6 is Java 17 bytecode, so it cannot run on the Java 8 and Java 11 cells of the test matrix. The test classes
+// are therefore compiled once against the JUnit 5 API - the subset that is binary compatible with JUnit 6 - and
+// executed against whichever platform the cell's JVM can load: JUnit 5 below Java 17, JUnit 6 from Java 17 up. The
+// arrangement is self-checking rather than enforced: a test that reaches for JUnit 5 API which JUnit 6 dropped
+// compiles fine but fails the Java 17+ cells, and one that needs Java 9+ bytecode fails the Java 8 cell.
+val junit5Version = "5.14.1"
+val junit6Version = "6.1.3"
+val firstJunit6Jvm = 17
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(25)
@@ -36,11 +45,14 @@ dependencies {
     implementation("org.apache.maven:maven-core:3.9.16")
 
     testImplementation(gradleTestKit())
-    testImplementation("org.spockframework:spock-core:2.4-M6-groovy-4.0") {
+    // Compile against the JUnit 5 API so the test classes stay Java 8 bytecode and keep running on the Java 8 and
+    // Java 11 cells of the matrix. The Java 17+ cells swap in JUnit 6 at *runtime* - see junit6TestRuntimeClasspath.
+    testImplementation(platform("org.junit:junit-bom:$junit5Version"))
+    testImplementation("org.spockframework:spock-core:2.4-groovy-4.0") {
         exclude(module = "groovy-all")
     }
-    testImplementation("org.junit.jupiter:junit-jupiter-api:5.13.4")
-    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.13.4")
+    testImplementation("org.junit.jupiter:junit-jupiter-api")
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("com.github.stefanbirkner:system-lambda:1.2.1")
 
@@ -80,9 +92,33 @@ val localPluginMarkerPublication = localTestRepository.map {
     it.dir("org/cyclonedx/bom/org.cyclonedx.bom.gradle.plugin/$version")
 }
 
+// The same test runtime as `testRuntimeClasspath`, resolved against JUnit 6 instead of JUnit 5. Two things have to be
+// overridden for that to resolve at all: the JUnit version, and the `org.gradle.jvm.version` attribute - which the
+// java plugin derives from `options.release = 8` and which would otherwise reject JUnit 6's "compatible with Java 17"
+// variants outright, before any JVM ever loads a class.
+val junit6TestRuntimeClasspath by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+    extendsFrom(configurations["testImplementation"], configurations["testRuntimeOnly"])
+    attributes {
+        attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
+        attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
+        attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, objects.named(LibraryElements.JAR))
+        attribute(Bundling.BUNDLING_ATTRIBUTE, objects.named(Bundling.EXTERNAL))
+        attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, firstJunit6Jvm)
+    }
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.junit" && requested.name == "junit-bom") {
+            useVersion(junit6Version)
+            because("the Java $firstJunit6Jvm+ cells of the matrix run on the JUnit 6 platform")
+        }
+    }
+}
+
 listOf(8, 11, 17, 21, 25).forEach { version ->
     tasks.register<Test>("testJava$version") {
-        description = "Runs tests with Java $version"
+        val junitPlatform = if (version >= firstJunit6Jvm) 6 else 5
+        description = "Runs tests with Java $version on the JUnit $junitPlatform platform"
         group = "verification"
         javaLauncher.set(
             javaToolchains.launcherFor {
@@ -90,7 +126,11 @@ listOf(8, 11, 17, 21, 25).forEach { version ->
             }
         )
         testClassesDirs = sourceSets["test"].output.classesDirs
-        classpath = sourceSets["test"].runtimeClasspath
+        classpath = if (junitPlatform == 6) {
+            sourceSets["test"].output + sourceSets["main"].output + junit6TestRuntimeClasspath
+        } else {
+            sourceSets["test"].runtimeClasspath
+        }
         useJUnitPlatform()
         maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
         if (version >= 11) {
